@@ -5,6 +5,8 @@ url_ibge <- paste0("https://servicodados.ibge.gov.br/api/v3/agregados/1092/",
                    "periodos/202401-202504/variaveis/all?localidades=N3[all]&",
                    "classificacao=18[all]&classificacao=12529[all]&classificacao=12716[all]")
 
+###############################################################################
+
 # 2. Fazer a requisição e parsear o JSON
 json_ibge <- httr::GET(url_ibge) |> 
   httr::content("text", encoding = "UTF-8") |> 
@@ -12,34 +14,51 @@ json_ibge <- httr::GET(url_ibge) |>
 
 # Função para processar um resultado específico (por índice)
 processar_resultado_ibge <- function(json_ibge, indice) {
-  # Extrair dados do resultado específico
-  dados <- dplyr::bind_cols(
-    json_ibge$resultados[[indice]]$series[[1]]$localidade |>
-      dplyr::select(-nivel),
-    json_ibge$resultados[[indice]]$series[[1]]$serie
-  )
+  
+  # Determinar quantas séries existem neste resultado
+  num_series <- nrow(json_ibge$resultados[[indice]])
+  
+  # Criar uma lista para armazenar os dados de cada série
+  lista_dados <- list()
+  
+  # Iterar sobre todas as séries
+  for(s in 1:num_series) {
+    # Extrair dados da série específica
+    dados_serie <- dplyr::bind_cols(
+      json_ibge$resultados[[indice]]$series[[s]]$localidade |> 
+        dplyr::select(-nivel),
+      json_ibge$resultados[[indice]]$series[[s]]$serie
+    )
+    
+    # Extrair informações das classificações correspondentes a esta série
+    classificacoes_info <- json_ibge$resultados[[indice]]$classificacoes[[s]]
+    
+    # Adicionar colunas de classificação
+    dados_serie <- dados_serie |>
+      dplyr::mutate(
+        !!!setNames(
+          lapply(1:length(classificacoes_info$id), function(i) {
+            as.character(
+              classificacoes_info$categoria[
+                i, !is.na(classificacoes_info$categoria[i, ])])
+          }),
+          classificacoes_info$nome
+        )
+      )
+    
+    lista_dados[[s]] <- dados_serie
+  }
+  
+  # Combinar todos os dados das séries
+  dados <- dplyr::bind_rows(lista_dados)
+  
+  #########
   
   # Renomear colunas de localidade
   dados <- dados |> 
     dplyr::rename(localidade_id = id, localidade_nome = nome)
   
-  # Extrair informações das classificações
-  classificacoes_info <- json_ibge$resultados[[indice]]$classificacoes[[1]]
-  
-  # Adicionar colunas de classificação
-  dados <- dados |>
-    dplyr::mutate(
-      !!!setNames(
-        lapply(1:length(classificacoes_info$id), function(i) {
-          as.character(
-            classificacoes_info$categoria[
-              i,!is.na(classificacoes_info$categoria[i, ])])
-        }),
-        classificacoes_info$nome
-      )
-    )
-  
-  # Adicionar informações da variável
+  # Adicionar informações da variável (comum a todas as séries)
   dados <- dados |>
     dplyr::mutate(
       variavel_id = json_ibge$id[indice],
@@ -47,10 +66,10 @@ processar_resultado_ibge <- function(json_ibge, indice) {
       variavel_unidade = json_ibge$unidade[indice]
     )
   
-  # Transformar para formato longo (colunas com formato YYYYMM ou YYYYMMDD)
+  # Transformar para formato longo
   dados_long <- dados |>
     tidyr::pivot_longer(
-      cols = matches("^[0-9]{6}$|^[0-9]{8}$"),  # pega colunas com 6 ou 8 dígitos (YYYYMM ou YYYYMMDD)
+      cols = matches("^[0-9]{6}$|^[0-9]{8}$"),
       names_to = "periodo",
       values_to = "valor"
     )
@@ -88,3 +107,4 @@ todos_resultados[["285"]] |> dplyr::glimpse()  # Peso total das carcaças
 
 
 todos_resultados |> dplyr::glimpse()
+todos_resultados[["151"]]$`Tipo de rebanho bovino` |> unique()
