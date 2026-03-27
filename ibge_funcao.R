@@ -145,7 +145,7 @@ busca_ibge <- function(agregado,
     # Transformar para formato longo
     dados_long <- dados |>
       tidyr::pivot_longer(
-        cols = matches("^[0-9]{6}$|^[0-9]{8}$"),
+        cols = tidyselect::matches("^[0-9]{6}$|^[0-9]{8}$"),
         names_to = "periodo",
         values_to = "valor"
       )
@@ -171,6 +171,78 @@ busca_ibge <- function(agregado,
   # Executar
   todos_resultados <- processar_todos_resultados(json_ibge)
   
+  # ============================================
+  # PÓS-PROCESSAMENTO COM TIDYVERSE
+  # ============================================
+  cat("\n🔄 Aplicando pós-processamento com tidyverse...\n")
+  
+  todos_resultados <- purrr::map(todos_resultados, function(tabela) {
+    
+    # 1. Tratamento da coluna periodo com base na Referência temporal
+    if("Referência temporal" %in% names(tabela)) {
+      ref_temp_unique <- tabela |> 
+        dplyr::pull(`Referência temporal`) |> 
+        unique()
+      
+      if(length(ref_temp_unique) == 1 && !is.na(ref_temp_unique)) {
+        # Converter para snake_case
+        ref_temp_clean <- ref_temp_unique |>
+          stringr::str_to_lower() |>
+          stringr::str_replace_all(" ", "_") |>
+          stringr::str_replace_all("[^a-z0-9_]", "")
+        
+        # Renomear coluna periodo e remover Referência temporal
+        tabela <- tabela |>
+          dplyr::rename_with(
+            ~ paste0("periodo_", ref_temp_clean),
+            .cols = "periodo"
+          ) |>
+          dplyr::select(-`Referência temporal`)
+      }
+    }
+    
+    # 2. Tratamento da coluna valor combinando variavel_nome + variavel_unidade
+    if(all(c("variavel_nome", "variavel_unidade") %in% names(tabela))) {
+      
+      nome_unique <- tabela |> dplyr::pull(variavel_nome) |> unique()
+      unidade_unique <- tabela |> dplyr::pull(variavel_unidade) |> unique()
+      
+      if(length(nome_unique) == 1 && length(unidade_unique) == 1) {
+        # Criar nome da coluna no formato snake_case
+        nome_clean <- nome_unique |>
+          stringr::str_to_lower() |>
+          stringr::str_replace_all("[^a-z0-9]", "_") |>
+          stringr::str_replace_all("_+", "_") |>
+          stringr::str_remove_all("^_|_$")
+        
+        unidade_clean <- unidade_unique |>
+          stringr::str_to_lower() |>
+          stringr::str_replace_all("[^a-z0-9]", "_") |>
+          stringr::str_replace_all("_+", "_") |>
+          stringr::str_remove_all("^_|_$")
+        
+        novo_nome_valor <- paste0(nome_clean, "_", unidade_clean)
+        
+        # Renomear coluna valor e remover colunas originais
+        tabela <- tabela |>
+          dplyr::rename_with(
+            ~ novo_nome_valor,
+            .cols = "valor"
+          ) |>
+          dplyr::select(-variavel_nome, -variavel_unidade)
+      }
+    }
+    
+    # 3. Remover a coluna variavel_id (já que o nome da lista já identifica a variável)
+    if("variavel_id" %in% names(tabela)) {
+      tabela <- tabela |>
+        dplyr::select(-variavel_id)
+    }
+    
+    return(tabela)
+  })
+  
+  cat("✅ Pós-processamento concluído!\n")
   cat("✅ Processamento concluído!\n")
   
   return(todos_resultados)
@@ -179,15 +251,5 @@ busca_ibge <- function(agregado,
 # Testar
 resultados_1092 <- busca_ibge(1092, periodos = "202401-202504", localidades = "N3[all]")
 
-resultados_1092 |> dplyr::glimpse()
-
-# Verificar todas as classificações
-cat("\n=== Verificando classificações ===\n")
-cat("Tipo de rebanho bovino:\n")
-print(resultados_1092[[1]]$`Tipo de rebanho bovino` |> unique())
-
-cat("\nTipo de inspeção:\n")
-print(resultados_1092[[1]]$`Tipo de inspeção` |> unique())
-
-cat("\nReferência temporal:\n")
-print(resultados_1092[[1]]$`Referência temporal` |> unique())
+# Verificar se a coluna variavel_id foi removida
+resultados_1092[[1]] |> dplyr::glimpse()
