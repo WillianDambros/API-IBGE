@@ -20,12 +20,22 @@ busca_ibge <- function(agregado,
   cat("   URL: ", url_base, "\n")
   
   response <- httr::GET(url_base)
+  
+  # Verificar se a primeira chamada foi bem-sucedida
+  if (httr::http_error(response)) {
+    cat("❌ Erro na primeira chamada. Status:", httr::status_code(response), 
+        "\n")
+    cat("   A API não retornou dados para esta combinação.\n")
+    return(NULL)
+  }
+  
   json_base <- httr::content(response, "text", encoding = "UTF-8") |> 
     jsonlite::fromJSON(simplifyDataFrame = FALSE)
   
   # Verificar estrutura e extrair classificações
   if(length(json_base) == 0) {
-    stop("Nenhum dado retornado pela API")
+    cat("⚠️ Nenhum dado retornado pela API na primeira chamada.\n")
+    return(NULL)
   }
   
   # Tentar extrair todas as classificações de forma segura
@@ -39,7 +49,8 @@ busca_ibge <- function(agregado,
     if(is.list(primeiro_elemento) && !is.null(primeiro_elemento$resultados)) {
       if(length(primeiro_elemento$resultados) > 0) {
         primeiro_resultado <- primeiro_elemento$resultados[[1]]
-        if(is.list(primeiro_resultado) && !is.null(primeiro_resultado$classificacoes)) {
+        if(is.list(primeiro_resultado) && !is.null(
+          primeiro_resultado$classificacoes)) {
           # Extrair TODAS as classificações
           classificacoes_list <- primeiro_resultado$classificacoes
           
@@ -47,25 +58,30 @@ busca_ibge <- function(agregado,
           class_parts <- c()
           for(j in 1:length(classificacoes_list)) {
             classificacao <- classificacoes_list[[j]]
-            class_parts <- c(class_parts, paste0("&classificacao=", classificacao$id, "[all]"))
+            class_parts <- c(class_parts, paste0("&classificacao=",
+                                                 classificacao$id, "[all]"))
           }
           class_str <- paste(class_parts, collapse = "")
           
           cat("   Classificações encontradas:", 
-              paste(sapply(classificacoes_list, function(x) x$nome), collapse = ", "), "\n")
+              paste(sapply(classificacoes_list, function(x) x$nome),
+                    collapse = ", "), "\n")
         }
       }
-    } else if(is.list(primeiro_elemento) && !is.null(primeiro_elemento$classificacoes)) {
+    } else if(is.list(primeiro_elemento) && !is.null(
+      primeiro_elemento$classificacoes)) {
       # Formato alternativo
       classificacoes_list <- primeiro_elemento$classificacoes
       class_parts <- c()
       for(j in 1:length(classificacoes_list)) {
         classificacao <- classificacoes_list[[j]]
-        class_parts <- c(class_parts, paste0("&classificacao=", classificacao$id, "[all]"))
+        class_parts <- c(class_parts, paste0("&classificacao=",
+                                             classificacao$id, "[all]"))
       }
       class_str <- paste(class_parts, collapse = "")
       cat("   Classificações encontradas:", 
-          paste(sapply(classificacoes_list, function(x) x$nome), collapse = ", "), "\n")
+          paste(sapply(classificacoes_list, function(x) x$nome),
+                collapse = ", "), "\n")
     } else {
       cat("   Nenhuma classificação encontrada para este agregado.\n")
     }
@@ -83,23 +99,68 @@ busca_ibge <- function(agregado,
   cat("   URL: ", url_final, "\n")
   
   # Chamada final para obter todos os dados
-  json_ibge <- httr::GET(url_final) |>
-    httr::content("text", encoding = "UTF-8") |>
+  response_final <- httr::GET(url_final)
+  
+  # Verificar se a requisição final foi bem-sucedida
+  if (httr::http_error(response_final)) {
+    cat("❌ Erro na requisição final. Status:", 
+        httr::status_code(response_final), "\n")
+    cat("   A API não retornou dados para esta combinação de agregado/período/localidade.\n")
+    cat("   Possíveis causas:\n")
+    cat("     - O agregado não possui dados para o período solicitado\n")
+    cat("     - O agregado foi descontinuado\n")
+    cat("     - Problema temporário na API do IBGE\n")
+    return(NULL)
+  }
+  
+  json_ibge <- httr::content(response_final, "text", encoding = "UTF-8") |> 
     jsonlite::fromJSON()
   
+  # Verificar se o JSON tem a estrutura esperada
+  if(is.null(json_ibge) || length(json_ibge) == 0) {
+    cat("⚠️ A API retornou uma estrutura vazia. Nenhum dado disponível.\n")
+    return(NULL)
+  }
+  
+  if(is.null(json_ibge$resultados) || length(json_ibge$resultados) == 0) {
+    cat("⚠️ Nenhum resultado encontrado para esta consulta.\n")
+    return(NULL)
+  }
+  
+  if(is.null(json_ibge$id) || length(json_ibge$id) == 0) {
+    cat("⚠️ Nenhuma variável encontrada para este agregado.\n")
+    return(NULL)
+  }
+  
   cat("✅ Dados carregados com sucesso!\n")
+  cat("   Total de variáveis encontradas:", length(json_ibge$id), "\n")
   
   # Função para processar um resultado específico (por índice)
   processar_resultado_ibge <- function(json_ibge, indice) {
     
+    # Verificar se o índice existe
+    if(indice > length(json_ibge$resultados)) {
+      return(NULL)
+    }
+    
     # Determinar quantas séries existem neste resultado
     num_series <- length(json_ibge$resultados[[indice]]$series)
+    
+    if(num_series == 0) {
+      return(NULL)
+    }
     
     # Criar uma lista para armazenar os dados de cada série
     lista_dados <- list()
     
     # Iterar sobre todas as séries
     for(s in 1:num_series) {
+      # Verificar se a série tem a estrutura esperada
+      if(is.null(json_ibge$resultados[[indice]]$series[[s]]$localidade) ||
+         is.null(json_ibge$resultados[[indice]]$series[[s]]$serie)) {
+        next
+      }
+      
       # Extrair dados da série específica
       dados_serie <- dplyr::bind_cols(
         json_ibge$resultados[[indice]]$series[[s]]$localidade |> 
@@ -131,6 +192,10 @@ busca_ibge <- function(agregado,
     # Combinar todos os dados das séries
     dados <- dplyr::bind_rows(lista_dados)
     
+    if(is.null(dados) || nrow(dados) == 0) {
+      return(NULL)
+    }
+    
     # Renomear colunas de localidade
     dados <- dados |> 
       dplyr::rename(localidade_id = id, localidade_nome = nome)
@@ -157,14 +222,25 @@ busca_ibge <- function(agregado,
   # Processar todos os resultados e criar uma lista
   processar_todos_resultados <- function(json_ibge) {
     lista_resultados <- list()
+    total_variaveis <- length(json_ibge$id)
     
-    for(i in 1:length(json_ibge$id)) {
-      cat("Processando variável", i, "de", length(json_ibge$id), ":",
+    for(i in 1:total_variaveis) {
+      cat("Processando variável", i, "de", total_variaveis, ":",
           json_ibge$variavel[i], "\n")
-      lista_resultados[[i]] <- processar_resultado_ibge(json_ibge, i)
+      resultado <- processar_resultado_ibge(json_ibge, i)
+      if(!is.null(resultado)) {
+        lista_resultados[[i]] <- resultado
+      } else {
+        cat("   ⚠️ Variável sem dados disponíveis\n")
+      }
     }
     
-    names(lista_resultados) <- json_ibge$id
+    if(length(lista_resultados) == 0) {
+      cat("⚠️ Nenhuma variável com dados foi processada.\n")
+      return(NULL)
+    }
+    
+    names(lista_resultados) <- json_ibge$id[!sapply(lista_resultados, is.null)]
     
     return(lista_resultados)
   }
@@ -172,12 +248,19 @@ busca_ibge <- function(agregado,
   # Executar
   todos_resultados <- processar_todos_resultados(json_ibge)
   
+  if(is.null(todos_resultados)) {
+    cat("❌ Processamento interrompido: nenhum dado válido foi encontrado.\n")
+    return(NULL)
+  }
+  
   # ============================================
   # PÓS-PROCESSAMENTO COM TIDYVERSE
   # ============================================
   cat("\n🔄 Aplicando pós-processamento com tidyverse...\n")
   
   todos_resultados <- purrr::map(todos_resultados, function(tabela) {
+    
+    if(is.null(tabela)) return(NULL)
     
     # 1. Tratamento da coluna periodo com base na Referência temporal
     if("Referência temporal" %in% names(tabela)) {
@@ -243,7 +326,16 @@ busca_ibge <- function(agregado,
     return(tabela)
   })
   
+  # Remover elementos NULL da lista
+  todos_resultados <- purrr::compact(todos_resultados)
+  
+  if(length(todos_resultados) == 0) {
+    cat("❌ Nenhuma tabela válida após o pós-processamento.\n")
+    return(NULL)
+  }
+  
   cat("✅ Pós-processamento concluído!\n")
+  cat("   Total de tabelas processadas:", length(todos_resultados), "\n")
   
   # ============================================
   # COMBINAR TABELAS EM UM ÚNICO DATAFRAME (VERSÃO GENÉRICA)
@@ -255,6 +347,12 @@ busca_ibge <- function(agregado,
     # 1. Identificar dinamicamente as colunas comuns (presentes em TODAS as tabelas)
     todas_colunas <- purrr::map(todos_resultados, names)
     colunas_comuns <- Reduce(intersect, todas_colunas)
+    
+    if(length(colunas_comuns) == 0) {
+      cat("⚠️ Não foi possível identificar colunas comuns entre as tabelas.\n")
+      cat("   Retornando a lista de tabelas separadas.\n")
+      return(todos_resultados)
+    }
     
     cat("   Colunas comuns identificadas:\n")
     cat("     ", paste(colunas_comuns, collapse = ", "), "\n")
@@ -268,7 +366,8 @@ busca_ibge <- function(agregado,
     colunas_classificacao <- setdiff(colunas_comuns, c("localidade_id", "localidade_nome"))
     
     # Identificar a coluna de período (começa com "periodo_")
-    coluna_periodo <- colunas_classificacao[stringr::str_starts(colunas_classificacao, "periodo_")]
+    coluna_periodo <- colunas_classificacao[
+      stringr::str_starts(colunas_classificacao, "periodo_")]
     if(length(coluna_periodo) > 0) {
       colunas_chave <- c(colunas_chave, coluna_periodo)
       colunas_classificacao <- setdiff(colunas_classificacao, coluna_periodo)
@@ -312,15 +411,13 @@ busca_ibge <- function(agregado,
     cat("   Total de linhas:", nrow(tabela_combinada), "\n")
     cat("   Total de colunas:", ncol(tabela_combinada), "\n")
     
+    # Converter colunas numéricas (opcional)
+    # tabela_combinada <- tabela_combinada |>
+    #   dplyr::mutate(dplyr::across(where(is.character) & !dplyr::any_of(colunas_chave), as.numeric))
+    
     return(tabela_combinada)
   }
   
   cat("✅ Processamento concluído!\n")
   return(todos_resultados)
 }
-
-# Testar com agregado 1092
-resultados_1092 <- busca_ibge(1092, periodos = "202401-202504", localidades = "N3[all]")
-
-# Visualizar o resultado
-resultados_1092 |> dplyr::glimpse()
