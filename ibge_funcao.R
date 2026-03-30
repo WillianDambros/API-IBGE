@@ -2,7 +2,8 @@
 busca_ibge <- function(agregado,
                        variaveis = "all",
                        localidades = "N3[all]",
-                       periodos = "all") {
+                       periodos = "all",
+                       combinar_tabelas = TRUE) {
   
   base_url <- "https://servicodados.ibge.gov.br/api/v3/agregados"
   
@@ -233,7 +234,7 @@ busca_ibge <- function(agregado,
       }
     }
     
-    # 3. Remover a coluna variavel_id (já que o nome da lista já identifica a variável)
+    # 3. Remover a coluna variavel_id
     if("variavel_id" %in% names(tabela)) {
       tabela <- tabela |>
         dplyr::select(-variavel_id)
@@ -243,13 +244,83 @@ busca_ibge <- function(agregado,
   })
   
   cat("✅ Pós-processamento concluído!\n")
-  cat("✅ Processamento concluído!\n")
   
+  # ============================================
+  # COMBINAR TABELAS EM UM ÚNICO DATAFRAME (VERSÃO GENÉRICA)
+  # ============================================
+  
+  if(combinar_tabelas && length(todos_resultados) > 0) {
+    cat("\n🔄 Combinando todas as tabelas em um único dataframe...\n")
+    
+    # 1. Identificar dinamicamente as colunas comuns (presentes em TODAS as tabelas)
+    todas_colunas <- purrr::map(todos_resultados, names)
+    colunas_comuns <- Reduce(intersect, todas_colunas)
+    
+    cat("   Colunas comuns identificadas:\n")
+    cat("     ", paste(colunas_comuns, collapse = ", "), "\n")
+    
+    # 2. Identificar colunas que são chave (que queremos manter como identificadores)
+    # As colunas de localidade sempre serão chave
+    colunas_localidade <- c("localidade_id", "localidade_nome")
+    colunas_chave <- colunas_localidade
+    
+    # Adicionar colunas de classificação (qualquer coluna que não seja período e não seja a coluna de valor)
+    colunas_classificacao <- setdiff(colunas_comuns, c("localidade_id", "localidade_nome"))
+    
+    # Identificar a coluna de período (começa com "periodo_")
+    coluna_periodo <- colunas_classificacao[stringr::str_starts(colunas_classificacao, "periodo_")]
+    if(length(coluna_periodo) > 0) {
+      colunas_chave <- c(colunas_chave, coluna_periodo)
+      colunas_classificacao <- setdiff(colunas_classificacao, coluna_periodo)
+    }
+    
+    # Adicionar as colunas de classificação restantes como chave
+    if(length(colunas_classificacao) > 0) {
+      colunas_chave <- c(colunas_chave, colunas_classificacao)
+    }
+    
+    cat("   Colunas chave para combinação:\n")
+    cat("     ", paste(colunas_chave, collapse = ", "), "\n")
+    
+    # 3. Iniciar com a primeira tabela (apenas as colunas chave)
+    tabela_combinada <- todos_resultados[[1]] |>
+      dplyr::select(dplyr::all_of(colunas_chave))
+    
+    # 4. Adicionar as colunas específicas de cada tabela
+    for(nome_tabela in names(todos_resultados)) {
+      tabela <- todos_resultados[[nome_tabela]]
+      
+      # Identificar colunas que NÃO são chave (são as variáveis específicas)
+      colunas_especificas <- setdiff(names(tabela), colunas_chave)
+      
+      if(length(colunas_especificas) > 0) {
+        # Adicionar cada coluna específica
+        for(coluna_espec in colunas_especificas) {
+          cat("     Adicionando coluna:", coluna_espec, "\n")
+          
+          tabela_combinada <- tabela_combinada |>
+            dplyr::left_join(
+              tabela |>
+                dplyr::select(dplyr::all_of(c(colunas_chave, coluna_espec))),
+              by = colunas_chave
+            )
+        }
+      }
+    }
+    
+    cat("✅ Tabelas combinadas com sucesso!\n")
+    cat("   Total de linhas:", nrow(tabela_combinada), "\n")
+    cat("   Total de colunas:", ncol(tabela_combinada), "\n")
+    
+    return(tabela_combinada)
+  }
+  
+  cat("✅ Processamento concluído!\n")
   return(todos_resultados)
 }
 
-# Testar
+# Testar com agregado 1092
 resultados_1092 <- busca_ibge(1092, periodos = "202401-202504", localidades = "N3[all]")
 
-# Verificar se a coluna variavel_id foi removida
-resultados_1092[[1]] |> dplyr::glimpse()
+# Visualizar o resultado
+resultados_1092 |> dplyr::glimpse()
