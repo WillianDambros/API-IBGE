@@ -61,6 +61,39 @@ abate_animais <- abate_animais |>
     )
   )
 
+
+# Using the particular produce decoder to adding more information in the novocaged
+
+compilado_decodificador_endereço <-
+  paste0("https://github.com/WillianDambros/data_source/raw/",
+         "refs/heads/main/compilado_decodificador.xlsx")
+
+decodificador_endereco <- paste0(getwd(), "/compilado_decodificador.xlsx")
+
+
+curl::curl_download(compilado_decodificador_endereço,
+                    decodificador_endereco)
+
+"compilado_decodificador.xlsx" |> readxl::excel_sheets()
+
+territorialidade_sedec <- 
+  readxl::read_excel("compilado_decodificador.xlsx",
+                     sheet =  "geo_estados",
+                     col_types = "text") |>
+  dplyr::mutate(
+    latitude_estado =
+      readr::parse_number(latitude_estado,
+                          locale = readr::locale(decimal_mark = ",")),
+    longitude_estado =
+      readr::parse_number(longitude_estado,
+                          locale = readr::locale(decimal_mark = ",")))
+
+abate_animais <- abate_animais |> 
+  dplyr::left_join(territorialidade_sedec,
+                   by = dplyr::join_by(localidade_nome ==
+                                         ESTADO))
+
+
 # Visualizar
 abate_animais |> dplyr::glimpse()
 
