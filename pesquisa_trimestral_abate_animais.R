@@ -1,10 +1,11 @@
-source("X:/POWER BI/IBGE/ibge_pesquisas.R")
 
-json_agregados$nome |> unique()
+#source("X:/POWER BI/IBGE/ibge_pesquisas.R")
 
-tabelas_ibge |>
-  dplyr::filter(pesquisa_nome == "Pesquisa Trimestral do Abate de Animais") |>
-  dplyr::glimpse()
+#json_agregados$nome |> unique()
+
+#tabelas_ibge |>
+#  dplyr::filter(pesquisa_nome == "Pesquisa Trimestral do Abate de Animais") |>
+#  dplyr::glimpse()
 
 
 # 10 anos de intervalo 
