@@ -92,37 +92,29 @@ tabelas_processadas$sivilcultura_municipal |> dplyr::glimpse()
 tabelas_processadas$area_sivilcutura_municipal |> dplyr::glimpse()
 
 # ============================================================================
-# CORREÇÃO: FUZZYJOIN PARA MUNICÍPIOS DE MATO GROSSO (COM NORMALIZAÇÃO)
+# CÓDIGO FINAL: FUZZYJOIN PARA TABELAS MUNICIPAIS (SEM DUPLICAÇÃO)
 # ============================================================================
 
-# 1. Recarregar o decodificador corretamente
+# 1. Carregar e preparar o decodificador -------------------------------------
 territorialidade_mt <- readxl::read_excel(
   decodificador_endereco,
   sheet = "territorialidade_municipios_mt",
   col_types = "text"
 )
 
-# 2. Identificar a coluna que contém o nome do município (provavelmente "territorio_geo_munícipios")
-colunas_decod <- names(territorialidade_mt)
-print("Colunas disponíveis no decodificador:")
-print(colunas_decod)
-
-# Ajuste: usar a coluna correta (substitua "territorio_geo_munícipios" se necessário)
-coluna_municipio_decod <- "territorio_geo_munícipios"  # ou "MUNICIPIO", verifique
-
-# 3. Função de normalização (remove acentos, pontuação, espaços, coloca em minúsculo)
+# Função de normalização (minúsculo, remove acentos, pontuação, espaços)
 normalizar <- function(x) {
   x |>
     stringr::str_to_lower() |>
-    stringr::str_replace_all(" \\(mt\\)", "") |>   # remove " (mt)" se existir
+    stringr::str_replace_all(" \\(mt\\)", "") |>   # remove " (mt)"
     stringr::str_replace_all("[^a-z0-9 ]", "") |>  # remove acentos e pontuação
     stringr::str_squish()                          # remove espaços extras
 }
 
-# 4. Preparar a base territorial com nome normalizado
+# Preparar base territorial
 territorialidade_mt <- territorialidade_mt |>
   dplyr::select(
-    dplyr::all_of(coluna_municipio_decod),        # nome do município
+    territorio_geo_munícipios,
     rpseplan10340_munícipio_polo_decodificado,
     rpseplan10340_regiao_decodificado,
     imeia_regiao,
@@ -130,97 +122,115 @@ territorialidade_mt <- territorialidade_mt |>
     territorio_latitude,
     territorio_longitude
   ) |>
-  dplyr::rename(MUNICIPIO_ORIGINAL = dplyr::all_of(coluna_municipio_decod)) |>
+  dplyr::rename(municipio_decod_original = territorio_geo_munícipios) |>
   dplyr::mutate(
-    MUNICIPIO_NORM = normalizar(MUNICIPIO_ORIGINAL),
-    # Converter coordenadas (vírgula como decimal)
+    municipio_norm = normalizar(municipio_decod_original),
     dplyr::across(
       c(territorio_latitude, territorio_longitude),
       ~ readr::parse_number(., locale = readr::locale(decimal_mark = ","))
     )
   ) |>
-  dplyr::filter(!is.na(MUNICIPIO_NORM))  # remove linhas sem nome
+  dplyr::filter(!is.na(municipio_norm))
 
-# 5. Função para limpar o nome vindo do IBGE
-limpar_municipio_ibge <- function(nome) {
-  nome |>
-    stringr::str_remove(" \\(MT\\)") |>   # remove " (MT)"
-    stringr::str_trim()
+# 2. Função para enriquecer uma tabela municipal (sem duplicar linhas) ------
+enriquecer_municipal <- function(tabela_ibge) {
+  
+  # Preparar tabela IBGE
+  tabela_ibge <- tabela_ibge |>
+    dplyr::mutate(
+      municipio_ibge_clean = stringr::str_remove(localidade_nome, " \\(MT\\)") |> stringr::str_trim(),
+      municipio_ibge_norm = normalizar(municipio_ibge_clean)
+    )
+  
+  # Fuzzyjoin: calcular todas as correspondências dentro da distância máxima
+  join_result <- fuzzyjoin::stringdist_left_join(
+    tabela_ibge,
+    territorialidade_mt,
+    by = c("municipio_ibge_norm" = "municipio_norm"),
+    method = "jw",
+    max_dist = 0.15,
+    distance_col = "dist_match"
+  )
+  
+  # Para cada linha original, manter apenas a melhor correspondência (menor distância)
+  melhor_correspondencia <- join_result |>
+    dplyr::group_by(dplyr::across(-dplyr::any_of(c("municipio_decod_original", 
+                                                   "rpseplan10340_munícipio_polo_decodificado",
+                                                   "rpseplan10340_regiao_decodificado",
+                                                   "imeia_regiao",
+                                                   "imeia_municipios_polo_economico",
+                                                   "territorio_latitude",
+                                                   "territorio_longitude",
+                                                   "municipio_norm",
+                                                   "dist_match")))) |>
+    dplyr::slice_min(order_by = dist_match, n = 1, with_ties = FALSE) |>
+    dplyr::ungroup()
+  
+  # Remover colunas auxiliares e colunas originais de "mil_reais"
+  resultado <- melhor_correspondencia |>
+    dplyr::select(-municipio_ibge_clean, -municipio_ibge_norm, -municipio_norm, -dist_match) |>
+    dplyr::select(-dplyr::ends_with("mil_reais"))   # remove as colunas antigas (já temos _reais)
+  
+  return(resultado)
 }
 
-# 6. Aplicar fuzzyjoin com normalização e tolerância maior
-tabelas_municipais_enriquecidas <- list()
+# 3. Aplicar a função a cada tabela municipal ---------------------------------
 nomes_municipais <- c("extracao_vegetal_municipal", 
                       "sivilcultura_municipal", 
                       "area_sivilcutura_municipal")
 
+tabelas_municipais_enriquecidas <- list()
+
 for (nome in nomes_municipais) {
   if (nome %in% names(tabelas_processadas)) {
-    tabela <- tabelas_processadas[[nome]]
-    
-    tabela_enriquecida <- tabela |>
-      # Criar coluna com nome limpo e normalizado
-      dplyr::mutate(
-        municipio_clean = limpar_municipio_ibge(localidade_nome),
-        municipio_norm = normalizar(municipio_clean)
-      ) |>
-      # Fuzzyjoin usando os nomes normalizados
-      fuzzyjoin::stringdist_left_join(
-        territorialidade_mt,
-        by = c("municipio_norm" = "MUNICIPIO_NORM"),
-        method = "jw",                # Jaro-Winkler
-        max_dist = 0.15,              # tolerância maior (15% de diferença)
-        distance_col = "dist_match"
-      ) |>
-      # Remover colunas auxiliares e manter apenas uma cópia do nome original
-      dplyr::select(-municipio_clean, -municipio_norm, -dist_match, -MUNICIPIO_NORM) |>
-      # Renomear a coluna do nome original do município (opcional)
-      dplyr::rename_with(~ "municipio_decod", .cols = "MUNICIPIO_ORIGINAL")
-    
-    # Remover colunas "mil_reais" se existirem (já temos as versões "_reais")
-    if (any(stringr::str_detect(names(tabela_enriquecida), "mil_reais"))) {
-      tabela_enriquecida <- tabela_enriquecida |>
-        dplyr::select(-dplyr::ends_with("mil_reais"))
-    }
-    
-    tabelas_municipais_enriquecidas[[nome]] <- tabela_enriquecida
-    message("✅ Enriquecida com sucesso: ", nome)
+    tabelas_municipais_enriquecidas[[nome]] <- enriquecer_municipal(tabelas_processadas[[nome]])
+    message("✅ Enriquecida: ", nome, " (", nrow(tabelas_municipais_enriquecidas[[nome]]), " linhas)")
   } else {
     message("⚠️ Tabela não encontrada: ", nome)
   }
 }
 
-# 7. Verificar se o join funcionou (agora deve aparecer dados não-NA)
-message("\n📊 Verificação de correspondências (sivilcultura_municipal):")
+# 4. Verificação rápida (exibir primeiras correspondências) -----------------
+message("\n📊 Amostra da tabela 'sivilcultura_municipal' enriquecida:")
 tabelas_municipais_enriquecidas$sivilcultura_municipal |>
-  dplyr::select(localidade_nome, imeia_regiao, territorio_latitude, dist_match) |>
+  dplyr::select(localidade_nome, imeia_regiao, territorio_latitude) |>
   dplyr::filter(!is.na(imeia_regiao)) |>
   head(10) |>
   print()
 
-# 8. Juntar com as tabelas estaduais (se quiser manter tudo em um só objeto)
+# 5. (Opcional) Unir com as tabelas estaduais em um único objeto ------------
 tabelas_finais <- tabelas_processadas
 for (nome in names(tabelas_municipais_enriquecidas)) {
   tabelas_finais[[nome]] <- tabelas_municipais_enriquecidas[[nome]]
 }
 
-message("\n✅ Processamento finalizado! Tabelas enriquecidas disponíveis em 'tabelas_finais'.")
+message("\n✅ Processamento finalizado! Tabelas disponíveis em 'tabelas_finais'.")
 
-# ============================================
-# SALVAR NO BANCO DE DADOS
-# ============================================
+
+tabelas_finais |> dplyr::glimpse()
+# 1. Carregar a conexão
 source("X:/POWER BI/NOVOCAGED/conexao.R")
 
+# 2. Schema alvo (ibge)
 schema_name <- "ibge"
-table_name <- "pesquisa_trimestral_abate_animais"
 
+# 3. Criar o schema se não existir (opcional, mas seguro)
 DBI::dbSendQuery(conexao, paste0("CREATE SCHEMA IF NOT EXISTS ", schema_name))
 
-RPostgres::dbWriteTable(conexao,
-                        name = DBI::Id(schema = schema_name,
-                                       table = table_name),
-                        value = abate_animais,
-                        row.names = FALSE, 
-                        overwrite = TRUE)
+# 5. Loop para escrever cada tabela no schema "ibge"
+for (table_name in names(tabelas_finais)) {
+  message("Escrevendo tabela: ", schema_name, ".", table_name)
+  
+  RPostgres::dbWriteTable(
+    conn = conexao,
+    name = DBI::Id(schema = schema_name, table = table_name),
+    value = tabelas_finais[[table_name]],
+    row.names = FALSE,
+    overwrite = TRUE
+  )
+}
 
-RPostgres::dbDisconnect(conexao)
+# 6. Desconectar
+DBI::dbDisconnect(conexao)
+
+message("✅ Todas as 6 tabelas foram escritas com sucesso no schema '", schema_name, "'.")
