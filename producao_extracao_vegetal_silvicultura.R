@@ -6,8 +6,8 @@
 #  dplyr::filter(pesquisa_nome == "Produção da Extração Vegetal e da Silvicultura")
 
 # 10 anos de intervalo 
-
-periodo_busca <- paste0(lubridate::year(lubridate::today()) - 2,
+# A tabela extracao vegetal municipal esta muito pessada para pesquisa do IBGE vai ter que separar a extracao por ano a escrita no servidor
+periodo_busca <- paste0(lubridate::year(lubridate::today()) - 5,
                         "-", lubridate::year(lubridate::today()))
 
 source("X:/POWER BI/IBGE/ibge_funcao_3.R")
@@ -94,7 +94,19 @@ tabelas_processadas$area_sivilcutura_municipal |> dplyr::glimpse()
 # ============================================================================
 # CÓDIGO FINAL: FUZZYJOIN PARA TABELAS MUNICIPAIS (SEM DUPLICAÇÃO)
 # ============================================================================
+# Using the particular produce decoder to adding more information in the novocaged
 
+compilado_decodificador_endereço <-
+  paste0("https://github.com/WillianDambros/data_source/raw/",
+         "refs/heads/main/compilado_decodificador.xlsx")
+
+decodificador_endereco <- paste0(getwd(), "/compilado_decodificador.xlsx")
+
+
+curl::curl_download(compilado_decodificador_endereço,
+                    decodificador_endereco)
+
+"compilado_decodificador.xlsx" |> readxl::excel_sheets()
 # 1. Carregar e preparar o decodificador -------------------------------------
 territorialidade_mt <- readxl::read_excel(
   decodificador_endereco,
@@ -190,19 +202,15 @@ for (nome in nomes_municipais) {
   }
 }
 
-# 4. Verificação rápida (exibir primeiras correspondências) -----------------
-message("\n📊 Amostra da tabela 'sivilcultura_municipal' enriquecida:")
-tabelas_municipais_enriquecidas$sivilcultura_municipal |>
-  dplyr::select(localidade_nome, imeia_regiao, territorio_latitude) |>
-  dplyr::filter(!is.na(imeia_regiao)) |>
-  head(10) |>
-  print()
-
 # 5. (Opcional) Unir com as tabelas estaduais em um único objeto ------------
 tabelas_finais <- tabelas_processadas
 for (nome in names(tabelas_municipais_enriquecidas)) {
   tabelas_finais[[nome]] <- tabelas_municipais_enriquecidas[[nome]]
 }
+
+# Renomear os elementos da lista com separador "__"
+names(tabelas_finais) <- paste0("producao_extracao_vegetal_silvicultura__",
+                                names(tabelas_finais))
 
 message("\n✅ Processamento finalizado! Tabelas disponíveis em 'tabelas_finais'.")
 
@@ -233,4 +241,5 @@ for (table_name in names(tabelas_finais)) {
 # 6. Desconectar
 DBI::dbDisconnect(conexao)
 
-message("✅ Todas as 6 tabelas foram escritas com sucesso no schema '", schema_name, "'.")
+message("✅ Todas as 6 tabelas foram escritas com sucesso no schema '", 
+        schema_name, "'.")
