@@ -216,6 +216,85 @@ message("\n✅ Processamento finalizado! Tabelas disponíveis em 'tabelas_finais
 
 
 tabelas_finais |> dplyr::glimpse()
+tabelas_finais$producao_extracao_vegetal_silvicultura__extracao_vegetal_estadual$`Tipo de produto extrativo` |> unique()
+  
+# Função para extrair o código principal (ex: "1" de "1 - Alimentícios" ou "1.1 - Açaí")
+extrair_codigo_principal <- function(x) {
+  # Pega tudo antes do primeiro espaço ou do primeiro ponto
+  stringr::str_extract(x, "^\\d+")
+}
+
+# Função para mapear código para nome da categoria
+mapear_categoria <- function(codigo) {
+  dplyr::case_when(
+    codigo == "1" ~ "Alimentícios",
+    codigo == "2" ~ "Aromáticos, medicinais, tóxicos e corantes",
+    codigo == "3" ~ "Borrachas",
+    codigo == "4" ~ "Ceras",
+    codigo == "5" ~ "Fibras",
+    codigo == "6" ~ "Gomas não elásticas",
+    codigo == "7" ~ "Produtos madeireiros e energéticos",  # 7.1, 7.2, 7.3
+    codigo == "8" ~ "Oleaginosos",
+    codigo == "9" ~ "Pinheiro brasileiro",                  # 9.1, 9.2, 9.3
+    codigo == "10" ~ "Tanantes",
+    TRUE ~ "Outros"
+  )
+}
+
+# Aplicar nas tabelas de extração vegetal (estadual e municipal)
+tabelas_finais$producao_extracao_vegetal_silvicultura__extracao_vegetal_estadual <- 
+  tabelas_finais$producao_extracao_vegetal_silvicultura__extracao_vegetal_estadual |>
+  dplyr::mutate(
+    categoria_produto = dplyr::if_else(
+      `Tipo de produto extrativo` == "Total",
+      "Total",
+      mapear_categoria(extrair_codigo_principal(`Tipo de produto extrativo`))
+    )
+  )
+
+tabelas_finais$producao_extracao_vegetal_silvicultura__extracao_vegetal_municipal <- 
+  tabelas_finais$producao_extracao_vegetal_silvicultura__extracao_vegetal_municipal |>
+  dplyr::mutate(
+    categoria_produto = dplyr::if_else(
+      `Tipo de produto extrativo` == "Total",
+      "Total",
+      mapear_categoria(extrair_codigo_principal(`Tipo de produto extrativo`))
+    )
+  )
+
+tabelas_finais$producao_extracao_vegetal_silvicultura__sivilcultura_municipal$`Tipo de produto da silvicultura` |> unique()
+
+
+# Função para extrair o código principal (primeiro número) ou o padrão "X.X"
+extrair_codigo_silvicultura <- function(x) {
+  stringr::str_extract(x, "^\\d+(\\.\\d+)?")
+}
+
+# Mapeamento corrigido: usa str_detect para capturar todos os códigos que começam com "2"
+mapear_categoria_silvicultura <- function(codigo) {
+  dplyr::case_when(
+    codigo == "1.1" ~ "Carvão vegetal",
+    codigo == "1.2" ~ "Lenha",
+    codigo == "1.3" ~ "Madeira em tora",
+    stringr::str_detect(codigo, "^2") ~ "Outros produtos",  # pega 2, 2.1, 2.2, 2.3, etc.
+    codigo == "Total" ~ "Total",
+    TRUE ~ "Outros"
+  )
+}
+
+# Aplicar nas tabelas de silvicultura (estadual e municipal)
+for (nome_tabela in c("producao_extracao_vegetal_silvicultura__sivilcultura_estadual",
+                      "producao_extracao_vegetal_silvicultura__sivilcultura_municipal")) {
+  tabelas_finais[[nome_tabela]] <- tabelas_finais[[nome_tabela]] |>
+    dplyr::mutate(
+      categoria_produto = dplyr::if_else(
+        `Tipo de produto da silvicultura` == "Total",
+        "Total",
+        mapear_categoria_silvicultura(extrair_codigo_silvicultura(`Tipo de produto da silvicultura`))
+      )
+    )
+}
+
 # 1. Carregar a conexão
 source("X:/POWER BI/NOVOCAGED/conexao.R")
 
