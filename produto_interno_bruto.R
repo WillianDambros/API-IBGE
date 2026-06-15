@@ -1,167 +1,382 @@
-source("X:/POWER BI/IBGE/ibge_pesquisas.R")
+# ============================================================================
+# SCRIPT: PIB dos Municípios (Agregado 5938) - Estados e Municípios do MT
+# ============================================================================
 
-json_agregados$nome |> unique()
+# Carregar pacotes necessários
+#library(dplyr)
+#library(stringr)
+#library(fuzzyjoin)
+#library(readr)
+#library(purrr)
+#library(httr)
+#library(jsonlite)
+#library(lubridate)
+#library(curl)
+#library(readxl)
+#library(RPostgres)
+#library(DBI)
 
-tabelas_ibge |>
-  dplyr::filter(pesquisa_nome == "Produto Interno Bruto dos Municípios")
-
+# Fonte da função de busca do IBGE (ajuste o caminho)
 source("X:/POWER BI/IBGE/ibge_funcao_5.R")
 
-# --- Decodificador de unidade de medida para silvicultura ---
-metadados <- "https://servicodados.ibge.gov.br/api/v3/agregados/5938/metadados"
-resposta <- httr::GET(metadados)
-metadados_classificacao <- httr::content(resposta, "text", encoding = "UTF-8") |> 
-  jsonlite::fromJSON(simplifyDataFrame = FALSE)
-
-
-metadados_classificacao |> dplyr::glimpse()
-
 # ============================================================================
-# 1. DEFINIR PERÍODOS (ANOS) A PROCESSAR
+# 1. CONFIGURAÇÕES INICIAIS
 # ============================================================================
-ano_inicio <- lubridate::year(lubridate::today()) - 6
-ano_fim   <- lubridate::year(lubridate::today())   # pode tentar até o ano atual, mas será pulado se não houver dados
+
+# Período: últimos 6 anos completos (ajuste conforme necessidade)
+ano_inicio <- lubridate::year(lubridate::today()) - 20
+ano_fim   <- lubridate::year(lubridate::today())   # evita ano incompleto
 anos <- seq(ano_inicio, ano_fim, by = 1)
-anos |> dplyr::glimpse()
 
-periodo <- ano_inicio
+# ============================================================================
+# 2. DECODIFICADOR TERRITORIAL PARA MUNICÍPIOS DO MT
+# ============================================================================
 
-produto_interno_bruto_estados <- busca_ibge(5938, periodos = periodo, localidades = "N3[all]")
+compilado_decodificador_endereco <- paste0(
+  "https://github.com/WillianDambros/data_source/raw/",
+  "refs/heads/main/compilado_decodificador.xlsx"
+)
+decodificador_endereco <- paste0(getwd(), "/compilado_decodificador.xlsx")
+curl::curl_download(compilado_decodificador_endereco, decodificador_endereco)
 
-produto_interno_bruto_estados |> dplyr::glimpse()
-
-produto_interno_bruto_estados |> print()
-
-
-writexl::write_xlsx(produto_interno_bruto_estados, 
-                    "produto_interno_bruto_estados.xlsx")
-
-
-##################################################### Multiplicando por Mil ####
-
-# Selecionar as colunas que terminam com "mil_reais"
-colunas_mil <- names(produto_interno_bruto_estados)[endsWith(names(produto_interno_bruto_estados), "mil_reais")]
-
-# Converter cada coluna de mil_reais para numérico, multiplicar por 1000 e renomear
-produto_interno_bruto_estados <- dplyr::mutate(
-  produto_interno_bruto_estados,
-  dplyr::across(
-    dplyr::all_of(colunas_mil),
-    ~ as.numeric(ifelse(.x == "-", NA_character_, .x)) * 1000
-  )
+territorialidade_mt <- readxl::read_excel(
+  decodificador_endereco,
+  sheet = "territorialidade_municipios_mt",
+  col_types = "text"
 )
 
-# Renomear as colunas trocando o sufixo _mil_reais por _reais
-produto_interno_bruto_estados <- dplyr::rename_with(
-  produto_interno_bruto_estados,
-  ~ gsub("_mil_reais$", "_reais", .x),
-  dplyr::all_of(colunas_mil)
-)
-#######  
-# Converter ano para data (01-01-ano)
-produto_interno_bruto_estados$periodo <- lubridate::make_date(
-  year = as.numeric(produto_interno_bruto_estados$periodo),
-  month = 1,
-  day = 1
-)
+normalizar <- function(x) {
+  x |>
+    stringr::str_to_lower() |>
+    stringr::str_replace_all(" \\(mt\\)", "") |>
+    stringr::str_replace_all("[^a-z0-9 ]", "") |>
+    stringr::str_squish()
+}
 
-########################################################  separando as tabelas
-
-
-# Tabela de impostos (colunas com "impostos_l_quidos_de_subs_dios")
-produto_interno_bruto_estado_impostos <- dplyr::select(
-  produto_interno_bruto_estados,
-  localidade_id,
-  localidade_nome,
-  periodo,
-  dplyr::contains("impostos_l_quidos_de_subs_dios")
-)
-
-# Tabela de valor adicionado (colunas com "valor_adicionado_bruto")
-produto_interno_bruto_estados_valor_adicionado <- dplyr::select(
-  produto_interno_bruto_estados,
-  localidade_id,
-  localidade_nome,
-  periodo,
-  dplyr::contains("valor_adicionado_bruto")
-)
-
-produto_interno_bruto_estado_impostos |> dplyr::glimpse()
-
-produto_interno_bruto_estados_valor_adicionado |> dplyr::glimpse()
-
-
-writexl::write_xlsx(produto_interno_bruto_estado_impostos, 
-                    "produto_interno_bruto_estado_impostos.xlsx")
-
-writexl::write_xlsx(produto_interno_bruto_estados_valor_adicionado, 
-                    "produto_interno_bruto_estados_valor_adicionado.xlsx")
-
-############################# produto_interno_bruto_estados_valor_adicionado
-
-# Transformar a tabela original no formato longo e depois wide por setor
-produto_interno_bruto_estados_valor_adicionado <-
-  produto_interno_bruto_estados_valor_adicionado |>
-  tidyr::pivot_longer(
-    cols = -c(localidade_id, localidade_nome, periodo),
-    names_to = "variavel",
-    values_to = "valor"
+territorialidade_mt <- territorialidade_mt |>
+  dplyr::select(
+    territorio_geo_munícipios,
+    rpseplan10340_munícipio_polo_decodificado,
+    rpseplan10340_regiao_decodificado,
+    imeia_regiao,
+    imeia_municipios_polo_economico,
+    territorio_latitude,
+    territorio_longitude
   ) |>
+  dplyr::rename(municipio_decod_original = territorio_geo_munícipios) |>
   dplyr::mutate(
-    # Identificar o setor econômico
-    setor = dplyr::case_when(
-      stringr::str_starts(variavel, "valor_adicionado_bruto_a_pre_os_correntes_total") ~ "total",
-      stringr::str_starts(variavel, "valor_adicionado_bruto_a_pre_os_correntes_da_agropecu_ria") ~ "agropecuaria",
-      stringr::str_starts(variavel, "valor_adicionado_bruto_a_pre_os_correntes_da_ind_stria") ~ "industria",
-      stringr::str_starts(variavel, "valor_adicionado_bruto_a_pre_os_correntes_dos_servi_os_exclusive") ~ "servicos",
-      stringr::str_starts(variavel, "valor_adicionado_bruto_a_pre_os_correntes_da_administra_o_defesa") ~ "administracao",
-      TRUE ~ NA_character_
-    ),
-    # Identificar o nível (absoluto ou participação geográfica)
-    nivel = dplyr::case_when(
-      stringr::str_detect(variavel, "participa_o.*_da_microrregi") ~ "microrregiao",
-      stringr::str_detect(variavel, "participa_o.*_da_mesorregi") ~ "mesorregiao",
-      stringr::str_detect(variavel, "participa_o.*_da_unidade_da_federa") ~ "uf",
-      stringr::str_detect(variavel, "participa_o.*_da_grande_regi") ~ "grande_regiao",
-      stringr::str_detect(variavel, "participa_o.*_do_brasil") ~ "brasil",
-      stringr::str_starts(variavel, "valor_adicionado") ~ "valor_absoluto",
-      TRUE ~ NA_character_
-    ),
-    # Converter valor para numérico (hífen vira NA)
-    valor = as.numeric(ifelse(valor == "-", NA_character_, valor))
+    municipio_norm = normalizar(municipio_decod_original),
+    dplyr::across(
+      c(territorio_latitude, territorio_longitude),
+      ~ readr::parse_number(.x, locale = readr::locale(decimal_mark = ","))
+    )
   ) |>
-  dplyr::filter(!is.na(setor), !is.na(nivel)) |>
-  # Transformar os níveis em colunas novamente, agrupando por setor
-  tidyr::pivot_wider(
-    id_cols = c(localidade_id, localidade_nome, periodo, setor),
-    names_from = nivel,
-    values_from = valor
-  ) |>
-  # Renomear as colunas conforme solicitado
-  dplyr::rename(
-    valor_adicionado_bruto_a_pre_os_correntes_reais = valor_absoluto,
-    participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_total_no_valor_adicionado_bruto_a_pre_os_correntes_da_microrregi_o_geogr_fica_ = microrregiao,
-    participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_total_no_valor_adicionado_bruto_a_pre_os_correntes_da_mesorregi_o_geogr_fica_ = mesorregiao,
-    participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_total_no_valor_adicionado_bruto_a_pre_os_correntes_da_unidade_da_federa_o_ = uf,
-    participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_total_no_valor_adicionado_bruto_a_pre_os_correntes_da_grande_regi_o_ = grande_regiao,
-    participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_total_no_valor_adicionado_bruto_a_pre_os_correntes_do_brasil_ = brasil
+  dplyr::filter(!is.na(municipio_norm))
+
+# ============================================================================
+# 3. FUNÇÕES DE PÓS-PROCESSAMENTO PARA PIB
+# ============================================================================
+
+# Converte mil_reais para reais, participações para numérico, e período para data
+processar_pib_bruto <- function(df) {
+  # 1. Converter colunas mil_reais para reais (multiplicar por 1000)
+  colunas_mil <- names(df)[endsWith(names(df), "mil_reais")]
+  if (length(colunas_mil) > 0) {
+    df <- df |>
+      dplyr::mutate(dplyr::across(dplyr::all_of(colunas_mil), ~ as.numeric(.x) * 1000)) |>
+      dplyr::rename_with(~ gsub("_mil_reais$", "_reais", .x), dplyr::all_of(colunas_mil))
+  }
+  
+  # 2. Converter colunas de participação (começam com "participa_o") para numérico
+  colunas_participacao <- names(df)[startsWith(names(df), "participa_o")]
+  if (length(colunas_participacao) > 0) {
+    df <- df |>
+      dplyr::mutate(dplyr::across(dplyr::all_of(colunas_participacao), ~ as.numeric(.x)))
+  }
+  
+  # 3. Converter TODAS as outras colunas (que não são de identificação) para numérico
+  #    Isso pega colunas como "impostos_l_quidos_de_subs_dios_sobre_produtos_a_pre_os_correntes_"
+  colunas_identificacao <- c("localidade_id", "localidade_nome", "periodo")
+  colunas_para_converter <- setdiff(names(df), colunas_identificacao)
+  # Remove as que já foram convertidas (opcional, mas seguro)
+  colunas_para_converter <- setdiff(colunas_para_converter, c(colunas_mil, colunas_participacao))
+  
+  if (length(colunas_para_converter) > 0) {
+    df <- df |>
+      dplyr::mutate(dplyr::across(dplyr::all_of(colunas_para_converter), ~ as.numeric(.x)))
+  }
+  
+  # 4. Converter periodo para Date
+  df$periodo <- lubridate::make_date(year = as.numeric(df$periodo), month = 1, day = 1)
+  
+  return(df)
+}
+
+# Separa e transforma os dados em duas tabelas: macro e setores
+transformar_pib_long <- function(df) {
+  # --- Tabela macro (PIB + impostos + VAB total) ---
+  tabela_macro <- df |>
+    dplyr::select(
+      localidade_id, localidade_nome, periodo,
+      dplyr::contains("produto_interno_bruto"),
+      dplyr::contains("impostos_l_quidos_de_subs_dios"),
+      dplyr::contains("valor_adicionado_bruto_a_pre_os_correntes_total")
+    ) |>
+    tidyr::pivot_longer(
+      cols = -c(localidade_id, localidade_nome, periodo),
+      names_to = "variavel",
+      values_to = "valor"
+    ) |>
+    dplyr::mutate(valor = as.numeric(valor)
+                  ) |>
+    dplyr::mutate(
+      indicador = dplyr::case_when(
+        stringr::str_detect(variavel, "produto_interno_bruto") ~ "pib",
+        stringr::str_detect(variavel, "impostos_l_quidos_de_subs_dios") ~ "imposto",
+        stringr::str_detect(variavel, "valor_adicionado_bruto_a_pre_os_correntes_total") ~ "vab_total",
+        TRUE ~ NA_character_
+      ),
+      nivel = dplyr::case_when(
+        stringr::str_ends(variavel, "_reais") ~ "valor_absoluto",
+        stringr::str_detect(variavel, "microrregi") ~ "microrregiao",
+        stringr::str_detect(variavel, "mesorregi") ~ "mesorregiao",
+        stringr::str_detect(variavel, "unidade_da_federa") ~ "uf",
+        stringr::str_detect(variavel, "grande_regi") ~ "grande_regiao",
+        stringr::str_detect(variavel, "brasil") ~ "brasil",
+        TRUE ~ NA_character_
+      )
+    ) |>
+    dplyr::filter(!is.na(indicador), !is.na(nivel)) |>
+    tidyr::pivot_wider(
+      id_cols = c(localidade_id, localidade_nome, periodo, indicador),
+      names_from = nivel,
+      values_from = valor
+    )
+  
+  niveis_macro <- c("valor_absoluto", "microrregiao", "mesorregiao", "uf", "grande_regiao", "brasil")
+  for (n in niveis_macro) if (!n %in% names(tabela_macro)) tabela_macro[[n]] <- NA_real_
+  
+  tabela_macro <- tabela_macro |>
+    dplyr::rename(
+      valor_absoluto_reais = dplyr::any_of("valor_absoluto"),
+      participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_microrregi_o_geogr_fica_ = dplyr::any_of("microrregiao"),
+      participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_mesorregi_o_geogr_fica_ = dplyr::any_of("mesorregiao"),
+      participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_unidade_da_federa_o_ = dplyr::any_of("uf"),
+      participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_grande_regi_o_ = dplyr::any_of("grande_regiao"),
+      participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_do_brasil_ = dplyr::any_of("brasil")
+    )
+  
+  # --- Tabela setores (VAB por atividade) ---
+  tabela_setores <- df |>
+    dplyr::select(
+      localidade_id, localidade_nome, periodo,
+      dplyr::contains("valor_adicionado_bruto_a_pre_os_correntes_da_agropecu_ria"),
+      dplyr::contains("valor_adicionado_bruto_a_pre_os_correntes_da_ind_stria"),
+      dplyr::contains("valor_adicionado_bruto_a_pre_os_correntes_dos_servi_os_exclusive"),
+      dplyr::contains("valor_adicionado_bruto_a_pre_os_correntes_da_administra_o_defesa")
+    ) |>
+    tidyr::pivot_longer(
+      cols = -c(localidade_id, localidade_nome, periodo),
+      names_to = "variavel",
+      values_to = "valor"
+    ) |>
+    dplyr::mutate(
+      setor = dplyr::case_when(
+        stringr::str_detect(variavel, "agropecu_ria") ~ "agropecuaria",
+        stringr::str_detect(variavel, "ind_stria") ~ "industria",
+        stringr::str_detect(variavel, "servi_os_exclusive") ~ "servicos",
+        stringr::str_detect(variavel, "administra_o_defesa") ~ "administracao",
+        TRUE ~ NA_character_
+      ),
+      nivel = dplyr::case_when(
+        stringr::str_ends(variavel, "_reais") ~ "valor_absoluto",
+        stringr::str_detect(variavel, "participa_o.*_no_valor_adicionado_bruto_a_pre_os_correntes_total_") ~ "participacao_total",
+        stringr::str_detect(variavel, "da_microrregi_o_geogr_fica_") ~ "microrregiao",
+        stringr::str_detect(variavel, "da_mesorregi_o_geogr_fica_") ~ "mesorregiao",
+        stringr::str_detect(variavel, "da_unidade_da_federa_o_") ~ "uf",
+        stringr::str_detect(variavel, "da_grande_regi_o_") ~ "grande_regiao",
+        stringr::str_detect(variavel, "do_brasil_") ~ "brasil",
+        TRUE ~ NA_character_
+      )
+    ) |>
+    dplyr::filter(!is.na(setor), !is.na(nivel)) |>
+    tidyr::pivot_wider(
+      id_cols = c(localidade_id, localidade_nome, periodo, setor),
+      names_from = nivel,
+      values_from = valor
+    )
+  
+  niveis_setores <- c("valor_absoluto", "participacao_total", "microrregiao", "mesorregiao", "uf", "grande_regiao", "brasil")
+  for (n in niveis_setores) if (!n %in% names(tabela_setores)) tabela_setores[[n]] <- NA_real_
+  
+  tabela_setores <- tabela_setores |>
+    dplyr::rename(
+      valor_absoluto_reais = dplyr::any_of("valor_absoluto"),
+      participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_da_agropecu_ria_no_valor_adicionado_bruto_a_pre_os_correntes_total_ = dplyr::any_of("participacao_total"),
+      participacao_microrregiao = dplyr::any_of("microrregiao"),
+      participacao_mesorregiao = dplyr::any_of("mesorregiao"),
+      participacao_uf = dplyr::any_of("uf"),
+      participacao_grande_regiao = dplyr::any_of("grande_regiao"),
+      participacao_brasil = dplyr::any_of("brasil")
+    )
+  
+  return(list(macro = tabela_macro, setores = tabela_setores))
+}
+
+# Enriquecimento municipal (adicionar colunas do decodificador territorial)
+enriquecer_municipios <- function(tabela) {
+  tabela <- tabela |>
+    dplyr::mutate(
+      municipio_ibge_clean = stringr::str_remove(localidade_nome, " \\(MT\\)") |> stringr::str_trim(),
+      municipio_ibge_norm = normalizar(municipio_ibge_clean)
+    )
+  
+  join_result <- fuzzyjoin::stringdist_left_join(
+    tabela,
+    territorialidade_mt,
+    by = c("municipio_ibge_norm" = "municipio_norm"),
+    method = "jw",
+    max_dist = 0.15,
+    distance_col = "dist_match"
   )
+  
+  melhor_correspondencia <- join_result |>
+    dplyr::group_by(dplyr::across(-dplyr::any_of(c("municipio_decod_original", 
+                                                   "rpseplan10340_munícipio_polo_decodificado",
+                                                   "rpseplan10340_regiao_decodificado",
+                                                   "imeia_regiao",
+                                                   "imeia_municipios_polo_economico",
+                                                   "territorio_latitude",
+                                                   "territorio_longitude",
+                                                   "municipio_norm",
+                                                   "dist_match")))) |>
+    dplyr::slice_min(order_by = dist_match, n = 1, with_ties = FALSE) |>
+    dplyr::ungroup()
+  
+  resultado <- melhor_correspondencia |>
+    dplyr::select(-municipio_ibge_clean, -municipio_ibge_norm, -municipio_norm, -dist_match)
+  
+  return(resultado)
+}
 
+# ============================================================================
+# 4. FUNÇÃO PARA RENOMEAR COLUNAS (ANTES DE ESCREVER NO BANCO)
+# ============================================================================
 
+renomear_para_banco <- function(df, tipo) {
+  if (tipo == "macro") {
+    nomes <- names(df)
+    nomes_curtos <- dplyr::case_when(
+      nomes == "valor_absoluto_reais" ~ "valor_absoluto_reais",
+      nomes == "participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_microrregi_o_geogr_fica_" ~ "pib_part_microrregiao",
+      nomes == "participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_mesorregi_o_geogr_fica_" ~ "pib_part_mesorregiao",
+      nomes == "participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_unidade_da_federa_o_" ~ "pib_part_uf",
+      nomes == "participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_da_grande_regi_o_" ~ "pib_part_grande_regiao",
+      nomes == "participa_o_do_produto_interno_bruto_a_pre_os_correntes_no_produto_interno_bruto_a_pre_os_correntes_do_brasil_" ~ "pib_part_brasil",
+      TRUE ~ nomes
+    )
+    names(df) <- nomes_curtos
+  } else if (tipo == "setores") {
+    nomes <- names(df)
+    nomes_curtos <- dplyr::case_when(
+      nomes == "valor_absoluto_reais" ~ "valor_absoluto_reais",
+      nomes == "participa_o_do_valor_adicionado_bruto_a_pre_os_correntes_da_agropecu_ria_no_valor_adicionado_bruto_a_pre_os_correntes_total_" ~ "vab_part_total",
+      nomes == "participacao_microrregiao" ~ "vab_part_microrregiao",
+      nomes == "participacao_mesorregiao" ~ "vab_part_mesorregiao",
+      nomes == "participacao_uf" ~ "vab_part_uf",
+      nomes == "participacao_grande_regiao" ~ "vab_part_grande_regiao",
+      nomes == "participacao_brasil" ~ "vab_part_brasil",
+      TRUE ~ nomes
+    )
+    names(df) <- nomes_curtos
+  }
+  return(df)
+}
 
+# ============================================================================
+# 5. CONEXÃO COM O BANCO DE DADOS
+# ============================================================================
+source("X:/POWER BI/NOVOCAGED/conexao.R")   # cria objeto 'conexao'
+schema_name <- "ibge"
+DBI::dbExecute(conexao, paste0("CREATE SCHEMA IF NOT EXISTS ", schema_name))
 
+# ============================================================================
+# 6. LOOP PRINCIPAL POR ANO
+# ============================================================================
 
+for (i in seq_along(anos)) {
+  ano <- anos[i]
+  primeiro_ano <- (i == 1)
+  
+  message("\n=========================================")
+  message("Processando ano: ", ano)
+  message("=========================================\n")
+  
+  periodo <- as.character(ano)
+  
+  # --- Buscar dados dos estados (Unidades da Federação) ---
+  cat("Baixando dados estaduais...\n")
+  dados_estados <- busca_ibge(5938, periodos = periodo, localidades = "N3[all]")
+  if (is.null(dados_estados)) {
+    message("⚠️ Ano ", ano, " - sem dados estaduais. Pulando...")
+    next
+  }
+  
+  # --- Buscar dados dos municípios do MT ---
+  cat("Baixando dados municipais (MT)...\n")
+  codigos_municipios <- jsonlite::fromJSON("https://servicodados.ibge.gov.br/api/v1/localidades/estados/51/municipios")$id
+  localidades_mt <- paste0("N6[", paste(codigos_municipios, collapse = ","), "]")
+  dados_municipios <- busca_ibge(5938, periodos = periodo, localidades = localidades_mt)
+  if (is.null(dados_municipios)) {
+    message("⚠️ Ano ", ano, " - sem dados municipais (MT). Pulando...")
+    next
+  }
+  
+  # --- Processamento dos dados estaduais ---
+  cat("Processando dados estaduais...\n")
+  dados_estados <- processar_pib_bruto(dados_estados)
+  resultados_estados <- transformar_pib_long(dados_estados)
+  macro_estados <- resultados_estados$macro
+  setores_estados <- resultados_estados$setores
+  
+  # --- Processamento dos dados municipais (MT) ---
+  cat("Processando dados municipais (MT)...\n")
+  dados_municipios <- processar_pib_bruto(dados_municipios)
+  resultados_municipios <- transformar_pib_long(dados_municipios)
+  macro_municipios <- resultados_municipios$macro
+  setores_municipios <- resultados_municipios$setores
+  
+  # --- Enriquecimento municipal com territorialidade ---
+  macro_municipios <- enriquecer_municipios(macro_municipios)
+  setores_municipios <- enriquecer_municipios(setores_municipios)
+  
+  # --- Preparar lista de tabelas ---
+  tabelas_para_banco <- list(
+    pib_macro_estados = macro_estados,
+    pib_setores_estados = setores_estados,
+    pib_macro_municipios_mt = macro_municipios,
+    pib_setores_municipios_mt = setores_municipios
+  )
+  
+  # --- Escrever no banco com renomeação de colunas ---
+  for (nome_tabela in names(tabelas_para_banco)) {
+    tipo <- ifelse(grepl("macro", nome_tabela), "macro", "setores")
+    tabela_renomeada <- renomear_para_banco(tabelas_para_banco[[nome_tabela]], tipo)
+    
+    message("Escrevendo tabela: ", schema_name, ".", nome_tabela, " (ano ", ano, ")")
+    RPostgres::dbWriteTable(
+      conn = conexao,
+      name = DBI::Id(schema = schema_name, table = nome_tabela),
+      value = tabela_renomeada,
+      row.names = FALSE,
+      overwrite = primeiro_ano,
+      append = !primeiro_ano
+    )
+  }
+  
+  message("✅ Ano ", ano, " concluído.\n")
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+# Fechar conexão
+DBI::dbDisconnect(conexao)
+message("\n🎉 Todos os anos processados com sucesso!")
