@@ -1,5 +1,5 @@
 # ============================================================================
-# SCRIPT: PIB dos Municípios (Agregado 5938) - Estados e Municípios do MT
+# SCRIPT: PIB dos Municípios (Agregado 5938) + Índice de Gini (5939)
 # ============================================================================
 
 # Carregar pacotes necessários
@@ -23,9 +23,9 @@ source("X:/POWER BI/IBGE/ibge_funcao_5.R")
 # 1. CONFIGURAÇÕES INICIAIS
 # ============================================================================
 
-# Período: últimos 6 anos completos (ajuste conforme necessidade)
+# Período: últimos 20 anos completos (ajuste conforme necessidade)
 ano_inicio <- lubridate::year(lubridate::today()) - 20
-ano_fim   <- lubridate::year(lubridate::today())   # evita ano incompleto
+ano_fim   <- lubridate::year(lubridate::today()) - 1  # evita ano incompleto
 anos <- seq(ano_inicio, ano_fim, by = 1)
 
 # ============================================================================
@@ -95,10 +95,8 @@ processar_pib_bruto <- function(df) {
   }
   
   # 3. Converter TODAS as outras colunas (que não são de identificação) para numérico
-  #    Isso pega colunas como "impostos_l_quidos_de_subs_dios_sobre_produtos_a_pre_os_correntes_"
   colunas_identificacao <- c("localidade_id", "localidade_nome", "periodo")
   colunas_para_converter <- setdiff(names(df), colunas_identificacao)
-  # Remove as que já foram convertidas (opcional, mas seguro)
   colunas_para_converter <- setdiff(colunas_para_converter, c(colunas_mil, colunas_participacao))
   
   if (length(colunas_para_converter) > 0) {
@@ -127,8 +125,7 @@ transformar_pib_long <- function(df) {
       names_to = "variavel",
       values_to = "valor"
     ) |>
-    dplyr::mutate(valor = as.numeric(valor)
-                  ) |>
+    dplyr::mutate(valor = as.numeric(valor)) |>
     dplyr::mutate(
       indicador = dplyr::case_when(
         stringr::str_detect(variavel, "produto_interno_bruto") ~ "pib",
@@ -294,14 +291,81 @@ renomear_para_banco <- function(df, tipo) {
 }
 
 # ============================================================================
-# 5. CONEXÃO COM O BANCO DE DADOS
+# 5. FUNÇÃO PARA PROCESSAR ÍNDICE DE GINI (TABELA 5939)
+# ============================================================================
+
+processar_gini <- function(dados) {
+  # 1. Converter período para data (ano)
+  dados <- dados |>
+    dplyr::mutate(periodo = lubridate::ymd(paste0(periodo, "-01-01")))
+  
+  # 2. Identificar TODAS as colunas que contêm "gini" (case-insensitive)
+  colunas_gini <- grep("gini", names(dados), ignore.case = TRUE, value = TRUE)
+  
+  # 3. Converter essas colunas para numérico
+  dados <- dados |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(colunas_gini), as.numeric))
+  
+  # 4. Renomear na ordem esperada (PIB total, Agropecuária, Indústria, Serviços, Administração)
+  novos_nomes <- c("gini_pib_total", "gini_agropecuaria", "gini_industria",
+                   "gini_servicos", "gini_administracao")
+  
+  if (length(colunas_gini) == length(novos_nomes)) {
+    nomes_rename <- stats::setNames(colunas_gini, novos_nomes)
+    dados <- dados |> dplyr::rename(!!!nomes_rename)
+  } else {
+    warning("Número de colunas de Gini inesperado (", length(colunas_gini), 
+            "). Renomeação parcial.")
+    qtd <- min(length(colunas_gini), length(novos_nomes))
+    nomes_rename <- stats::setNames(colunas_gini[1:qtd], novos_nomes[1:qtd])
+    dados <- dados |> dplyr::rename(!!!nomes_rename)
+  }
+  
+  return(dados)
+}
+
+# ============================================================================
+# 6. FUNÇÃO AUXILIAR PARA BUSCAR MUNICÍPIOS EM BLOCOS (EVITA TIMEOUT)
+# ============================================================================
+
+buscar_municipios_mt <- function(ano, tamanho_bloco = 50) {
+  # Obtém todos os códigos dos municípios do MT
+  codigos <- jsonlite::fromJSON("https://servicodados.ibge.gov.br/api/v1/localidades/estados/51/municipios")$id
+  
+  # Divide em blocos
+  blocos <- split(codigos, ceiling(seq_along(codigos) / tamanho_bloco))
+  
+  dados_municipios <- list()
+  
+  for (i in seq_along(blocos)) {
+    cat("  Bloco", i, "de", length(blocos), "- municípios:", length(blocos[[i]]), "\n")
+    localidades <- paste0("N6[", paste(blocos[[i]], collapse = ","), "]")
+    temp <- busca_ibge(5938, periodos = ano, localidades = localidades)
+    if (!is.null(temp)) {
+      dados_municipios[[i]] <- temp
+    } else {
+      cat("  ⚠️ Bloco", i, "sem dados.\n")
+    }
+  }
+  
+  # Combina todos os blocos
+  if (length(dados_municipios) > 0) {
+    resultado <- dplyr::bind_rows(dados_municipios)
+    return(resultado)
+  } else {
+    return(NULL)
+  }
+}
+
+# ============================================================================
+# 7. CONEXÃO COM O BANCO DE DADOS
 # ============================================================================
 source("X:/POWER BI/NOVOCAGED/conexao.R")   # cria objeto 'conexao'
 schema_name <- "ibge"
 DBI::dbExecute(conexao, paste0("CREATE SCHEMA IF NOT EXISTS ", schema_name))
 
 # ============================================================================
-# 6. LOOP PRINCIPAL POR ANO
+# 8. LOOP PRINCIPAL POR ANO
 # ============================================================================
 
 for (i in seq_along(anos)) {
@@ -315,18 +379,16 @@ for (i in seq_along(anos)) {
   periodo <- as.character(ano)
   
   # --- Buscar dados dos estados (Unidades da Federação) ---
-  cat("Baixando dados estaduais...\n")
+  cat("Baixando dados estaduais (PIB 5938)...\n")
   dados_estados <- busca_ibge(5938, periodos = periodo, localidades = "N3[all]")
   if (is.null(dados_estados)) {
     message("⚠️ Ano ", ano, " - sem dados estaduais. Pulando...")
     next
   }
   
-  # --- Buscar dados dos municípios do MT ---
-  cat("Baixando dados municipais (MT)...\n")
-  codigos_municipios <- jsonlite::fromJSON("https://servicodados.ibge.gov.br/api/v1/localidades/estados/51/municipios")$id
-  localidades_mt <- paste0("N6[", paste(codigos_municipios, collapse = ","), "]")
-  dados_municipios <- busca_ibge(5938, periodos = periodo, localidades = localidades_mt)
+  # --- Buscar dados dos municípios do MT (usando blocos) ---
+  cat("Baixando dados municipais (MT) em blocos...\n")
+  dados_municipios <- buscar_municipios_mt(periodo, tamanho_bloco = 50)
   if (is.null(dados_municipios)) {
     message("⚠️ Ano ", ano, " - sem dados municipais (MT). Pulando...")
     next
@@ -350,7 +412,34 @@ for (i in seq_along(anos)) {
   macro_municipios <- enriquecer_municipios(macro_municipios)
   setores_municipios <- enriquecer_municipios(setores_municipios)
   
-  # --- Preparar lista de tabelas ---
+  # ========================================================================
+  # 9. PROCESSAMENTO DO ÍNDICE DE GINI (TABELA 5939)
+  # ========================================================================
+  cat("Baixando dados de Gini (estados e Brasil)...\n")
+  dados_gini_estados <- busca_ibge(5939, periodos = periodo, localidades = "N3[all]")
+  dados_gini_brasil  <- busca_ibge(5939, periodos = periodo, localidades = "N1[all]")
+  
+  if (!is.null(dados_gini_estados) && !is.null(dados_gini_brasil)) {
+    gini_estados <- processar_gini(dados_gini_estados) |> dplyr::mutate(nivel = "estado")
+    gini_brasil  <- processar_gini(dados_gini_brasil)  |> dplyr::mutate(nivel = "brasil")
+    gini_total   <- dplyr::bind_rows(gini_estados, gini_brasil)
+    
+    # Escreve a tabela de Gini no banco
+    message("Escrevendo tabela: ", schema_name, ".pib_gini (ano ", ano, ")")
+    RPostgres::dbWriteTable(
+      conn = conexao,
+      name = DBI::Id(schema = schema_name, table = "pib_gini"),
+      value = gini_total,
+      row.names = FALSE,
+      overwrite = primeiro_ano,
+      append = !primeiro_ano
+    )
+  } else {
+    message("⚠️ Ano ", ano, " - dados de Gini não disponíveis. Pulando...")
+  }
+  # ========================================================================
+  
+  # --- Preparar lista de tabelas de PIB ---
   tabelas_para_banco <- list(
     pib_macro_estados = macro_estados,
     pib_setores_estados = setores_estados,
