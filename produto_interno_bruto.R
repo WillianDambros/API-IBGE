@@ -25,7 +25,7 @@ source("X:/POWER BI/IBGE/ibge_funcao_5.R")
 
 # Período: últimos 20 anos completos (ajuste conforme necessidade)
 ano_inicio <- lubridate::year(lubridate::today()) - 20
-ano_fim   <- lubridate::year(lubridate::today()) - 1  # evita ano incompleto
+ano_fim   <- lubridate::year(lubridate::today())  # evita ano incompleto
 anos <- seq(ano_inicio, ano_fim, by = 1)
 
 # ============================================================================
