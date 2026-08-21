@@ -37,13 +37,16 @@ volume_pib <- readxl::read_xls(arquivo_caminho, col_names = F)
 volume_pib <- volume_pib |>
   dplyr::filter(
     is.na(volume_pib[[1]]) | 
-      !stringr::str_detect(volume_pib[[1]],
-                           "Tabela|Federação|Norte|Nordeste|Sudeste|
-                           Sul|Centro-Oeste|Fonte")
+      !stringr::str_detect(stringr::str_trim(volume_pib[[1]]),   # limpa espaços e \n,
+                           "Tabela|Federação|^Norte$|Nordeste|Sudeste|^Sul$|Centro-Oeste|Fonte") # Por algum motivo funciona Sul funciona assim
   ) |> 
   dplyr::slice(-1) |>
   janitor::row_to_names(row_number = 1) |>
   dplyr::rename(Região = 1)
+
+#volume_pib[[1]] |> 
+#  stringr::str_subset("Sul") |> 
+#  unique()
 
 volume_pib <- volume_pib |>
   dplyr::mutate(across(`2010`:`2023`, as.numeric)) |>
