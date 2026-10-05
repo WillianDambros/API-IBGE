@@ -311,14 +311,39 @@ dados_estados <- dados_estados |>
 dados_estados <- dados_estados |>
   dplyr::select(-VALOR)
 
-
-
-
-
+dados_estados |> dplyr::glimpse()
 
 # lembrar de renomear adequadamente o arquivo
 
+# ==================================================================
+# Padrão único: "(1 000 000 R$)"
+# ==================================================================
+padrao_milhao <- "\\(1 000 000 R\\$\\)"
 
+# ==================================================================
+# 1. Multiplicar os valores por 1.000.000 (converter para R$)
+#    — seleciona pelo padrão, enquanto os nomes ainda o contêm
+# ==================================================================
+dados_estados <- dados_estados |>
+  dplyr::mutate(
+    dplyr::across(
+      tidyselect::matches(padrao_milhao),
+      ~ .x * 1e6
+    )
+  )
+
+# ==================================================================
+# 2. Renomear: remover "\n(1 000 000 R$)" dos nomes
+#    — usa o mesmo padrão para selecionar as colunas a renomear
+# ==================================================================
+dados_estados <- dados_estados |>
+  dplyr::rename_with(
+    .fn   = ~ stringr::str_remove(.x, stringr::str_c("\\n?", padrao_milhao)),
+    .cols = tidyselect::matches(padrao_milhao)
+  )
+
+
+dados_estados |> dplyr::glimpse()
 
 # ============================================================================
 # 7. CONEXÃO COM O BANCO DE DADOS
@@ -328,14 +353,14 @@ source("X:/POWER BI/NOVOCAGED/conexao.R")   # cria objeto 'conexao'
 schema_name <- "ibge"
 DBI::dbExecute(conexao, paste0("CREATE SCHEMA IF NOT EXISTS ", schema_name))
 
-table_name <- "pib_volume_contas_regionais"
+table_name <- "pib_vab_contas_regionais_ftp"
 
 DBI::dbSendQuery(conexao, paste0("CREATE SCHEMA IF NOT EXISTS ", schema_name))
 
 RPostgres::dbWriteTable(conexao,
                         name = DBI::Id(schema = schema_name,
                                        table = table_name),
-                        value = pib_volume_contas_regionais,
+                        value = dados_estados,
                         row.names = FALSE, overwrite = TRUE)
 
 RPostgres::dbDisconnect(conexao)
