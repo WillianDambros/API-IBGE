@@ -14,18 +14,18 @@ endereco <-
 tryCatch({
     curl::curl_download(endereco, # file name
       quiet = T,
-      destfile = paste0("X:/POWER BI/IBGE/contas_regionais/",
-                        "contas_regionais_especiais.zip"))
+      destfile = paste0(here::here(),
+                        "/contas_regionais_especiais.zip"))
   }, error = function(err) {warning("file could not be downloaded")})
 
 ?unzip()
 
-caminho <- "X:/POWER BI/IBGE/contas_regionais/contas_regionais_especiais.zip"
+caminho <- paste0(here::here(), "/contas_regionais_especiais.zip")
 
 unzip(caminho,
       files = "tab03.xls")
 
-arquivo_caminho <- "X:/POWER BI/IBGE/contas_regionais/tab03.xls"
+arquivo_caminho <- paste0(here::here(), "/tab03.xls")
 
 #############################
 
